@@ -1,0 +1,513 @@
+---
+title: "빅데이터 분석 기사 예제 문제 풀이"
+author: "doyeon"
+date: '2021 5 5 '
+output: html_document
+---
+```{r message=FALSE, ,results='hide'}
+library(data.table) #fread()
+library(skimr) #EDA
+library(forecast)
+library(caret) 
+library(tidymodels)
+library(gridExtra) #grid.arrange
+library(glmnet)
+theme_set(theme_bw())
+```
+###과제1.  
+#Data import    
+```{r}
+data <- fread("C:/R/workspace/project/study/day01/mtcars.csv",header = T)
+```
+  
+1) min-max(normalization)  
+    :모든 feature가 0과 1사이에 위치하게 만듭니다.
+데이터가 2차원 셋일 경우, 모든 데이터는 x축의 0과 1 사이에, y축의 0과 1사이에 위치하게 됩니다.  
+
+```{r}
+data$qsec <- scale(data$qsec,center = min(data$qsec),scale = max(data$qsec)-min(data$qsec))
+data %>% 
+    filter(mtcars>0.5) %>% 
+    tally()
+ggplot(data,aes(qsec))+
+    geom_histogram()
+```
+  
+2) standardization  
+    :각 feature의 평균을 0, 분산을 1로 변경합니다. 모든 특성들이 같은 스케일을 갖게 됩니다.   
+    
+```{r}
+data$qsec = scale(data$qsec,center = T,scale = T)
+data %>% 
+    filter(mtcars>0.5) %>% 
+    tally()
+ggplot(data,aes(qsec))+
+    geom_histogram()
+
+```
+  
+3)Robust scale  
+    :모든 특성들이 같은 크기를 갖는다는 점에서 StandardScaler와 비슷하지만, 평균과 분산 대신 median과 quartile을 사용합니다. RobustScaler는 이상치에 영향을 받지 않습니다.  
+    
+```{r}
+data$qsec <- DescTools::RobScale(data$qsec, center = TRUE, scale = TRUE)
+data %>% 
+    filter(mtcars>0.5) %>% 
+    tally()
+ggplot(data,aes(qsec))+
+    geom_histogram()
+
+```
+
+
+
+
+
+###과제2.  
+
+#Import Data  
+
+```{r,warning=FALSE,results='hide'}
+x_train <- fread("C:/R/workspace/project/X_train.csv",header = T,stringsAsFactors = T)
+y_train <- fread("C:/R/workspace/project/y_train.csv",header = T,stringsAsFactors = T)
+#x_test <- fread("C:/R/workspace/project/X_test.csv",header = T,stringsAsFactors = T)
+
+all_data <- x_train %>% 
+    bind_cols(y_train %>% select(gender))
+
+all_data %>% skim()
+#dim(3500,11)
+```
+  
+#preprocessing data  
+
+```{r}
+all_data <- all_data %>% 
+    select(-cust_id)
+
+#총구매액 변수 타입에 대한 이슈 발생
+all_data <- all_data %>% 
+    mutate(총구매액 = factor(총구매액)) %>% 
+    mutate(총구매액 = as.integer(총구매액))
+
+#환불금액의 NA값 0으로 대체 > 환불이 없었다면 금액 환산시 0이므로
+all_data <- all_data %>% 
+    mutate(환불금액 = ifelse(is.na(환불금액),0,환불금액))
+
+#factor 변환
+all_data <- all_data %>% 
+    mutate(gender = factor(gender))
+
+```
+  
+#preprocessing2 - Recipe  
+
+```{r warning=FALSE}
+recipe <- all_data %>% 
+    recipe(gender ~.) %>% 
+    step_integer(all_nominal(),-all_outcomes()) %>% 
+    step_scale(all_numeric(),-all_outcomes()) %>% 
+    prep(training = all_data)
+all_data2 <- juice(recipe)
+```
+
+#EDA  
+```{r warning=FALSE}
+#Target variable
+ggplot(all_data,aes(x=gender,fill = gender))+
+    geom_bar()
+```
+  
+1)총구매액  
+
+```{r warning=FALSE}
+g1 <- ggplot(all_data,aes(x = 총구매액))+
+    geom_histogram(aes(y=..density..), colour="black", fill="white")+
+    geom_density(alpha=.5, fill="red")+
+    facet_grid(~gender)
+
+g2 <- ggplot(all_data,aes(sample = 총구매액))+
+    stat_qq()+
+    stat_qq_line()+
+    facet_grid(~gender)
+
+g3 <- ggplot(all_data,aes(x = 총구매액))+
+    geom_boxplot()+
+    coord_flip()+
+    facet_grid(~gender)
+
+grid.arrange(g1,g2,g3,nrow = 1,ncol = 3)
+#shapiro.test(all_data$총구매액) #정규성검정
+```
+  
+1-2)로그 변환     
+
+```{r warning=FALSE}
+g4 <- ggplot(all_data,aes(x = 총구매액 %>% log()))+
+    geom_histogram(aes(y=..density..), colour="black", fill="white")+
+    geom_density(alpha=.5, fill="red")+
+    facet_grid(~gender)
+
+g5 <- ggplot(all_data,aes(sample = 총구매액 %>% log()))+
+    stat_qq()+
+    stat_qq_line()+
+    facet_grid(~gender)
+
+g6 <- ggplot(all_data,aes(x = 총구매액 %>% log()))+
+    geom_boxplot()+
+    coord_flip()+
+    facet_grid(~gender)
+
+grid.arrange(g4,g5,g6,nrow = 1,ncol = 3)
+```
+
+
+  
+2-1)최대구매액  
+
+```{r echo=FALSE, warning=FALSE}
+g1 <- ggplot(all_data,aes(x = 최대구매액))+
+    geom_histogram(aes(y=..density..), colour="black", fill="white")+
+    geom_density(alpha=.5, fill="red")+
+    facet_grid(~gender)
+
+g2 <- ggplot(all_data,aes(sample = 최대구매액))+
+    stat_qq()+
+    stat_qq_line()+
+    facet_grid(~gender)
+
+g3 <- ggplot(all_data,aes(x = 최대구매액))+
+    geom_boxplot()+
+    coord_flip()+
+    facet_grid(~gender)
+
+grid.arrange(g1,g2,g3,nrow = 1,ncol = 3)
+
+```
+  
+2-2)log transformation  
+
+```{r echo=FALSE, warning=FALSE}
+g4 <- ggplot(all_data,aes(x = (최대구매액+1) %>% log()))+
+    geom_histogram(aes(y=..density..), colour="black", fill="white")+
+    geom_density(alpha=.5, fill="red")+
+    facet_grid(~gender)
+
+g5 <- ggplot(all_data,aes(sample = (최대구매액+1) %>% log()))+
+    stat_qq()+
+    stat_qq_line()+
+    facet_grid(~gender)
+
+g6 <- ggplot(all_data,aes(x = (최대구매액+1) %>% log()))+
+    geom_boxplot()+
+    coord_flip()+
+    facet_grid(~gender)
+
+grid.arrange(g4,g5,g6,nrow = 1,ncol = 3)
+```
+  
+3-1)환불금액    
+  
+```{r echo=FALSE, warning=FALSE}
+g1 <- ggplot(all_data,aes(x = 환불금액))+
+    geom_histogram(aes(y=..density..), colour="black", fill="white")+
+    geom_density(alpha=.5, fill="red")+
+    facet_grid(~gender)
+
+g2 <- ggplot(all_data,aes(sample = 환불금액))+
+    stat_qq()+
+    stat_qq_line()+
+    facet_grid(~gender)
+
+g3 <- ggplot(all_data,aes(x = 환불금액))+
+    geom_boxplot()+
+    coord_flip()+
+    facet_grid(~gender)
+
+grid.arrange(g1,g2,g3,nrow = 1,ncol = 3)
+```
+  
+3-2)log transformation  
+
+```{r echo=FALSE, warning=FALSE}
+g4 <- ggplot(all_data,aes(x = (환불금액) %>% log()))+
+    geom_histogram(aes(y=..density..), colour="black", fill="white")+
+    geom_density(alpha=.5, fill="red")+
+    facet_grid(~gender)
+
+g5 <- ggplot(all_data,aes(sample = (환불금액) %>% log()))+
+    stat_qq()+
+    stat_qq_line()+
+    facet_grid(~gender)
+
+g6 <- ggplot(all_data,aes(x = (환불금액) %>% log()))+
+    geom_boxplot()+
+    coord_flip()+
+    facet_grid(~gender)
+
+grid.arrange(g4,g5,g6,nrow = 1,ncol = 3)
+```
+  
+4)내점당구매건수  
+
+```{r echo=FALSE, warning=FALSE}
+g1 <- ggplot(all_data,aes(x = 내점당구매건수))+
+    geom_histogram(aes(y=..density..), colour="black", fill="white")+
+    geom_density(alpha=.5, fill="red")+
+    facet_grid(~gender)
+
+g2 <- ggplot(all_data,aes(sample = 내점당구매건수))+
+    stat_qq()+
+    stat_qq_line()+
+    facet_grid(~gender)
+
+g3 <- ggplot(all_data,aes(x = 내점당구매건수))+
+    geom_boxplot()+
+    coord_flip()+
+    facet_grid(~gender)
+
+grid.arrange(g1,g2,g3,nrow = 1,ncol = 3)
+```
+  
+4-2)log transformation  
+
+```{r echo=FALSE, warning=FALSE}
+g4 <- ggplot(all_data,aes(x = (내점당구매건수) %>% log()))+
+    geom_histogram(aes(y=..density..), colour="black", fill="white")+
+    geom_density(alpha=.5, fill="red")+
+    facet_grid(~gender)
+
+g5 <- ggplot(all_data,aes(sample = (내점당구매건수) %>% log()))+
+    stat_qq()+
+    stat_qq_line()+
+    facet_grid(~gender)
+
+g6 <- ggplot(all_data,aes(x = (내점당구매건수) %>% log()))+
+    geom_boxplot()+
+    coord_flip()+
+    facet_grid(~gender)
+
+grid.arrange(g4,g5,g6,nrow = 1,ncol = 3)
+```
+  
+5)주말방문비율  
+
+```{r echo=FALSE, warning=FALSE}
+g1 <- ggplot(all_data,aes(x = 주말방문비율))+
+    geom_histogram(aes(y=..density..), colour="black", fill="white")+
+    geom_density(alpha=.5, fill="red")+
+    facet_grid(~gender)
+
+g2 <- ggplot(all_data,aes(sample = 주말방문비율))+
+    stat_qq()+
+    stat_qq_line()+
+    facet_grid(~gender)
+
+g3 <- ggplot(all_data,aes(x = 주말방문비율))+
+    geom_boxplot()+
+    coord_flip()+
+    facet_grid(~gender)
+
+grid.arrange(g1,g2,g3,nrow = 1,ncol = 3)
+```
+  
+5-2)log  
+
+```{r echo=FALSE, warning=FALSE}
+g1 <- ggplot(all_data,aes(x = 주말방문비율 %>% log()))+
+    geom_histogram(aes(y=..density..), colour="black", fill="white")+
+    geom_density(alpha=.5, fill="red")+
+    facet_grid(~gender)
+
+g2 <- ggplot(all_data,aes(sample = 주말방문비율 %>% log()))+
+    stat_qq()+
+    stat_qq_line()+
+    facet_grid(~gender)
+
+g3 <- ggplot(all_data,aes(x = 주말방문비율 %>% log()))+
+    geom_boxplot()+
+    coord_flip()+
+    facet_grid(~gender)
+
+grid.arrange(g1,g2,g3,nrow = 1,ncol = 3)
+```
+
+  
+6)내점일수  
+
+```{r echo=FALSE, warning=FALSE}
+g1 <- ggplot(all_data,aes(x = 내점일수))+
+    geom_histogram(aes(y=..density..), colour="black", fill="white")+
+    geom_density(alpha=.5, fill="red")+
+    facet_grid(~gender)
+
+g2 <- ggplot(all_data,aes(sample = 내점일수))+
+    stat_qq()+
+    stat_qq_line()+
+    facet_grid(~gender)
+
+g3 <- ggplot(all_data,aes(x = 내점일수))+
+    geom_boxplot()+
+    coord_flip()+
+    facet_grid(~gender)
+
+grid.arrange(g1,g2,g3,nrow = 1,ncol = 3)
+```
+  
+6-2)log  
+
+```{r echo=FALSE, warning=FALSE}
+g4 <- ggplot(all_data,aes(x = 내점일수 %>% log()))+
+    geom_histogram(aes(y=..density..), colour="black", fill="white")+
+    geom_density(alpha=.5, fill="red")+
+    facet_grid(~gender)
+
+g5 <- ggplot(all_data,aes(sample = 내점일수 %>% log()))+
+    stat_qq()+
+    stat_qq_line()+
+    facet_grid(~gender)
+
+g6 <- ggplot(all_data,aes(x = 내점일수 %>% log()))+
+    geom_boxplot()+
+    coord_flip()+
+    facet_grid(~gender)
+
+grid.arrange(g4,g5,g6,nrow = 1,ncol = 3)
+```
+
+  
+#Mosaic plot    
+
+```{r warning=FALSE}
+char_var <- all_data %>% 
+    select_if(is.factor)
+char_var
+num_var <- all_data %>% 
+    select(-c(주구매지점,주구매상품))
+num_var
+mosaicplot(gender~주구매지점+주구매상품,data = char_var,
+           color = c('red','blue'),offset=0)
+```
+  
+#HeatMap  
+
+```{r warning=FALSE}
+ggplot(all_data,aes(x=주구매지점,y=gender,fill = all_data$총구매금액))+
+    geom_tile()
+```
+  
+#Data Partition  
+  
+```{r}
+idx <-  sample(1:nrow(all_data2),nrow(all_data2)*0.7) 
+train <-  all_data2[idx,]
+test <-  all_data2[-idx,]
+```
+  
+##Modeling  
+1)logistic regression  
+
+```{r warning=FALSE}
+logit_mod <-
+    logistic_reg(mixture = 1,penalty = 0) %>%
+    set_engine("glmnet") %>%
+    set_mode("classification") 
+
+logit_wf <- 
+    workflow() %>% 
+    add_model(logit_mod) %>% 
+    add_formula(gender~.)
+
+logit_fit <- logit_wf %>% 
+    fit(train)
+
+logit_test_pred <- logit_fit %>% 
+    predict(test,type = 'prob') %>% 
+    bind_cols(predict(logit_fit,test)) %>% 
+    bind_cols(test %>% select(gender))
+
+logit_test_conf <- logit_test_pred %>% 
+    conf_mat(truth = gender,
+             estimate = .pred_class)
+logit_test_conf %>% summary
+#accuracy 0.6266
+```
+  
+2)Neural Networks    
+  
+```{r warning=FALSE}
+nn_model <- 
+    mlp(activation = "relu") %>%
+    set_engine("nnet") %>%
+    set_mode("classification")
+
+nn_wf <- 
+    workflow() %>% 
+    add_model(nn_model) %>% 
+    add_formula(gender~.)
+nn_fit <- 
+    nn_wf %>% 
+    fit(train)
+nn_test_pred <- nn_fit %>% 
+    predict(test,type='prob') %>% 
+    bind_cols(predict(nn_fit,test)) %>% 
+    bind_cols(test %>% select(gender))
+nn_test_conf <- nn_test_pred %>% 
+    conf_mat(truth = gender,
+             estimate = .pred_class)
+nn_test_conf %>% summary
+#accuracy 0.633
+```
+  
+3)Random Forest    
+
+```{r warning=FALSE}
+rf_model <- 
+    rand_forest() %>% 
+    set_engine("ranger") %>% 
+    set_mode("classification")
+
+rf_wf <- 
+    workflow() %>% 
+    add_model(rf_model) %>% 
+    add_formula(gender~.)
+
+rf_fit <- rf_wf %>% 
+    fit(train)
+
+rf_test_pred <- rf_fit %>% 
+    predict(test,type = 'prob') %>% 
+    bind_cols(predict(rf_fit,test)) %>% 
+    bind_cols(test %>% select(gender))
+
+rf_test_conf <- rf_test_pred %>% 
+    conf_mat(truth = gender,
+             estimate = .pred_class)
+rf_test_conf %>% summary
+#accuracy 0.640
+#최종모델 > RF
+```
+  
+#Submission    
+
+```{r warning=FALSE}
+submission <- rf_test_pred %>% 
+    select(.pred_class)
+write.csv(submission,row.names = F,"study01.csv")
+```
+
+
+
+참조사이트    
+-과제1  
+-https://homeproject.tistory.com/entry/%EB%8D%B0%EC%9D%B4%ED%84%B0-%EC%8A%A4%EC%BC%80%EC%9D%BC%EB%A7%81-Data-Scaling  
+-https://www.rdocumentation.org/packages/DescTools/versions/0.99.41/topics/RobScale  
+-https://datasciencee.tistory.com/6  
+
+
+
+
+
+
+
+
