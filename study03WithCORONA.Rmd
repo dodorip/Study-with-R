@@ -1,0 +1,219 @@
+---
+title: "Day03-코로나데이터"
+author: "doyeon"
+date: '2021 5 22 '
+output: html_document
+---
+  
+Library
+```{r  message=FALSE, ,results='hide'}
+library(lubridate)
+library(data.table) #fread()
+library(skimr) #EDA
+library(forecast)
+library(caret) 
+library(tidymodels)
+library(gridExtra) #grid.arrange
+theme_set(theme_bw())
+```
+  
+Data Import
+```{r}
+time_data <- fread("Time.csv",header= T)
+province_data <- fread("TimeProvince.csv",header=T)
+province_data <- province_data %>% 
+    select(-time)
+
+time_data <- time_data %>% 
+    select(-time)
+time_data %>% tail #20-01-20 ~ 20-06-30
+```
+  
+```{r}
+province_data %>% tail #20-01-20 ~ 20-06-30
+```
+  
+```{r}
+province_data$province %>% 
+    table
+province_var <- c('Busan','Chungcheongbuk-do','Chungcheongnam-do','Daegu',
+                  'Daejeon','Gangwon-do','Gwangju','Gyeonggi-do',
+                  'Gyeongsangbuk-do','Gyeongsangnam-do','Incheon','Jeju-do',
+                  'Jeollabuk-do','Jeollanam-do','Sejong','Seoul','Ulsan')#17
+```  
+  
+인구수 데이터 대입(단위 million)
+```{r}
+province_data <- province_data %>% 
+    mutate(population = case_when(
+        province == 'Busan' ~ 3.391,
+        province == 'Chungcheongbuk-do' ~ 1.608,
+        province == 'Chungcheongnam-do' ~ 2.121,
+        province == 'Daegu' ~ 2.418,
+        province == 'Daejeon' ~ 1.463,
+        province == 'Gangwon-do' ~ 1.542,
+        province == 'Gwangju' ~ 1.45,
+        province == 'Gyeonggi-do' ~ 13.427,
+        province == 'Gyeongsangbuk-do' ~ 2.639,
+        province == 'Gyeongsangnam-do' ~ 3.34,
+        province == 'Incheon' ~ 2.942,
+        province == 'Jeju-do' ~ 0.674,
+        province == 'Jeollabuk-do' ~ 1.804,
+        province == 'Jeollanam-do' ~1.851,
+        province == 'Sejong' ~ 0.361,
+        province == 'Seoul' ~ 9.668,
+        province == 'Ulsan' ~ 1.136)
+)
+province_data %>% 
+    select(population) %>% 
+    is.na() %>% sum() #결측값 없음
+```
+  
+Data pre-processing : transform to daily data  
+1)time_data
+```{r results='hide'}
+subtract <- function(x){
+  n <- vector()
+  for(i in 1:(length(x)-1)){
+    n[i] <- x[i+1]-x[i]
+  }
+  print(n)
+}
+test_single <- sapply(time_data %>% select(test),subtract) %>% as_tibble()
+test_single[163,] <- c(0)
+
+negative_single <- sapply(time_data %>% select(negative),subtract) %>%
+    as_tibble()
+negative_single[163,] <- c(0)
+
+confirmed_single <- sapply(time_data %>% select(confirmed),subtract) %>%
+    as_tibble()
+confirmed_single[163,] <- c(0)
+
+released_single <- sapply(time_data %>% select(released),subtract) %>%
+    as_tibble()
+released_single[163,] <- c(0)
+
+deceased_single <- sapply(time_data %>% select(deceased),subtract) %>%
+    as_tibble()
+deceased_single[163,] <- c(0)
+time_data2 <- time_data %>% 
+    bind_cols(test_single) %>% 
+    bind_cols(negative_single) %>% 
+    bind_cols(confirmed_single) %>% 
+    bind_cols(released_single) %>% 
+    bind_cols(deceased_single)
+```  
+  
+2)province_data
+```{r results='hide'}
+daily_func <- function(x){
+    n <- vector()
+    for(i in 1:length(x)-17){
+        n[i] <- x[i+17] - x[i]
+    }
+    print(n)
+}
+province_data %>% head #confirmed / released / deceased
+confirmed_sv <- sapply(province_data %>% select(confirmed),daily_func) %>%
+    as_tibble()
+confirmed_sv[2755:2771,] <- province_data$confirmed[2755:2771]
+released_sv <- sapply(province_data %>% select(released),daily_func) %>%
+    as_tibble()
+released_sv[2755:2771,] <- province_data$released[2755:2771]
+deceased_sv <- sapply(province_data %>% select(deceased),daily_func) %>%
+    as_tibble()
+deceased_sv[2755:2771,] <- province_data$deceased[2755:2771]
+province_data2 <- province_data %>% 
+  bind_cols(confirmed_sv) %>% 
+  bind_cols(released_sv) %>% 
+  bind_cols(deceased_sv)
+```  
+  
+
+  
+###문제2번 - 지역별 전체 인구대비 누적 사망률 top3  
+```{r}
+province_data %>% 
+    filter(date == "2020-06-30") %>% 
+    mutate(cumul_dec = deceased / population) %>% 
+    select(province,cumul_dec) %>% 
+    arrange(desc(cumul_dec)) %>% 
+    slice(1:3)
+
+province_data <- province_data %>% 
+    mutate(cumul_dec = deceased / population)
+```  
+  
+Top3 : Daegu / Gyeongsangbuk-do / Gangwon-do
+  
+그래프  
+```{r}
+#누적 및일일확진자 그래프
+province_data2 %>% 
+  select(date,province,confirmed...7,confirmed...3) %>% 
+  filter(province %in% c('Daegu','Gyeongsangbuk-do','Gangwon-do')) %>% 
+  ggplot(aes(date,confirmed...7,colour = province))+
+  geom_line()+
+  geom_line(aes(date,confirmed...3,colour = province))+
+  scale_y_continuous(sec.axis = sec_axis(~.))
+```  
+
+  
+###문제3번 -  위험지수 생성  
+사용 가능 지표(일일/누적) : 테스트 수 / 음성 수 / 양성 수 / 확진자 수 / 완치자 수 / 사망자 수   
+*위험지수 1(일시적/일일) = 테스트 수 / 지역 인구수  
+   : 지역 인구수 대비 테스트 숫자가 많다는 의미는 코로나 관련 이슈가 생겼을 가능성 농후. 따라서 코로나 위험 지수로 사용 가능할듯함.  
+**위험지수 2(일시적/일일) = 양성자 수 / 테스트 수  
+   : 코로나 이슈로 인하여 테스트 결과 실제 양성 테스트 비율이 높다는 의미는 해당 이슈가 실제 코로나와 연관되어 있으므로 이또한 위험지수로 사용가능할듯함.  
+**위험지수 3(장기/누적) = 양성자수(-(완치자수+사망자수)) / 지역 인구수(-사망)
+  
+  
+```{r eval=FALSE, include=FALSE}
+#위험지수 2 = 양성자 수 / 테스트 수
+#테스트 수 = 음성 + 양성
+province_data <- province_data %>% 
+    mutate(month = month(date),
+           day = day(date)) %>% 
+    mutate(md = paste(month,day))
+
+pr_md_sum <- province_data %>% 
+    select(-c(population,cumul_dec,month,day,released,deceased)) %>% 
+    group_by(date) %>% 
+    summarize(sum = sum(confirmed))
+
+province_data <- left_join(province_data,pr_md_sum,by = 'date')
+province_data %>% head(10) 
+#province_data$sum : 전국 일일 확진자수 
+
+all_data <- left_join(province_data,time_data,by = 'date')
+all_data <- all_data %>% 
+    mutate(positive = test...7 - negative...8)
+#Positive가 음수가 나온다는것은 test 결과가 당일에 나오지 않는다는 것을 의미할듯...
+#이런 정보 안주면 시험에서 풀다가 헛걸음하는데..
+
+```
+  
+  
+```{r eval=FALSE, include=FALSE}
+#위험지수 1
+all_data %>% 
+    mutate(danger_index = test...7/population) %>%
+    ggplot(aes(danger_index,fill = province))+
+    geom_density()+
+    geom_histogram()+
+    facet_grid(~province)
+
+all_data %>% 
+    mutate(danger_index = test...7/population) %>% 
+    filter("2020-05-01"<date & "2020-05-30">date) %>% 
+    select(province,danger_index) %>% 
+    arrange(danger_index %>% desc()) %>% 
+#    select(province) %>% 
+#    distinct() %>% 
+#    slice(1:3)
+    filter(danger_index>15000) %>% 
+   ggplot(aes(province,danger_index,fill=province))+
+    geom_boxplot()
+```  
+  
