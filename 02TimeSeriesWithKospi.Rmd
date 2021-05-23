@@ -1,0 +1,240 @@
+---
+title: "TimeSeries01"
+author: "doyeon"
+date: '2021 5 9 '
+output: html_document
+---
+
+```{r message=FALSE, ,results='hide'}
+library(readxl)
+library(tidymodels)
+library(caret)
+library(lubridate)
+library(skimr)
+library(fUnitRoots)
+library(forecast)
+library(gridExtra)
+library(lmtest)
+library(FitAR)
+```
+Data Import  
+
+```{r}
+raw_data <- read_excel("kospi.xls")
+data <- raw_data
+data %>% head()
+data %>% skim()
+```
+  
+Pre-processing01  
+
+```{r}
+data2 <- data %>% 
+    mutate(일자 = lubridate::ymd(일자)) %>% 
+    mutate(년 = lubridate::year(일자),
+            월 = month(일자),
+            일 = day(일자)) %>% 
+    group_by(년,월) %>% 
+    mutate(월평균지수 = sum(현재지수)/n()) %>% 
+    select(월평균지수) %>% 
+    distinct()
+data2 %>% tail
+```  
+  
+  
+ts 변환  
+```{r}
+tsData <- ts(data2$월평균지수,frequency = 12,start = c(2010,1),end = c(2019,11))
+plot(tsData)
+```  
+
+  
+1-1) ARIMA 모델
+```{r}
+components.ts <- decompose(tsData)
+plot(components.ts)
+```  
+
+-관측값 ( Observed ) – 실제 데이터 플롯  
+-추세 ( Trend ) – 데이터 점들의 전반적인 상향 또는 하향 움직임  
+-계절성 ( Seasonal )  – 데이터 점들의 월별/년별 패턴  
+-임의값 ( Random ) – 데이터의 설명할 수 없는 부분  
+*분산이 일정하지 않을 경우 변환을 통해서 해결할 수 있다.  
+  
+차분 진행 For ARIMA모델
+```{r}
+tsstationary <-  diff(tsData, differences=1)
+plot(tsstationary)
+```  
+  
+##1차 차분을 통해서 비정상성 해결되었음.
+
+계절성 제거
+```{r}
+timeseriesseasonallyadjusted <- tsData- components.ts$seasonal
+timeseriesseasonallyadjusted
+plot(timeseriesseasonallyadjusted) #여전히 비정상성 존재 > 차분 진행
+```  
+```{r}
+tsstationary <- diff(timeseriesseasonallyadjusted, differences=1)
+plot(tsstationary) #비정상성 해결
+```  
+
+Setup Model
+```{r}
+acf(tsstationary,lag.max = 50) #1이후 절단
+pacf(tsstationary,lag.max = 50) #l이후 절단
+```  
+
+acf / pacf 분석에 의한 모델  
+AR(1) > ARIMA(1,1,0)
+MA(1) > ARIMA(0,1,1)  
+ARMA(1,1) > ARIMA(1,1,1)  
+
+```{r}
+#1
+Arima(tsstationary,order = c(1,1,0))
+#AIC 1352.99
+```  
+```{r}
+#2
+Arima(tsstationary,order = c(0,1,1))
+#Aic 1308.12
+```  
+```{r}
+Arima(tsstationary,order = c(1,1,1))
+#AIC 1309.67
+```  
+  
+데이터 분할을 통한 예측 검정
+```{r results='hide'}
+train <- window(tsstationary,end = c(2017,12))
+test <- window(tsstationary,start = c(2018,1))
+```    
+
+
+```{r}
+#1
+Fit1 <- Arima(train,order = c(1,1,0))
+Fit1_fcast <- forecast(Fit1,12*2)
+autoplot(Fit1_fcast)+ autolayer(test)
+```  
+```{r}
+#2
+Fit2 <- Arima(train,order = c(0,1,1))
+Fit2_fcast <- forecast(Fit2,h = 12*2)
+autoplot(Fit2_fcast)+autolayer(test)
+```  
+
+```{r}
+Fit3 <- Arima(train,order = c(1,1,1))
+Fit3_fcast <- forecast(Fit3,h = 12*2)
+autoplot(Fit3_fcast)+autolayer(test)
+```  
+  
+최종 모델 선정
+```{r}
+test1 <- Arima(test,model = Fit1)
+accuracy(test1)
+```  
+```{r}
+test2 <- Arima(test,model = Fit2)
+accuracy(test2)
+```  
+```{r}
+test3 <- Arima(test,model = Fit3)
+accuracy(test3)
+```    
+
+최종모델 Fit3 잔차 독립성 검정  
+```{r}
+acf(Fit3$residuals,lag.max = 50)
+#잔차의 ACF는 중요한 자기상관이 없음을 보여준다.
+```  
+최종모델 Fit3 잔차 독립성 검정2 - Ljung Box Test
+```{r}
+boxresult <- LjungBoxTest(Fit3$residuals,k=2,StartLag=1)
+boxresult
+boxresult2 <- Box.test(Fit3$residuals,lag=10, fitdf=0, type="Lj")
+boxresult2
+#모든 p-value 0.05이상이므로 귀무가설을 기각할 수 없다.
+```  
+```{r}
+plot(boxresult[,3],main= "Ljung-Box Q Test", ylab= "P-values", xlab= "Lag")
+```  
+
+
+
+
+1-2) SARIMA 모델 with auto.arima()
+```{r}
+auto.arima(tsData)
+```  
+
+Model fitting
+```{r}
+kospi_arima <- Arima(tsData,order = c(1,1,1),seasonal = list(order = c(0,0,1),
+                                                            period = 12))
+kospi_arima
+```   
+
+최종 모델의 잔차 독립성 검정(Ljung-Box 검정)
+```{r}
+checkresiduals(kospi_arima)
+```  
+데이터 분할을 통한 예측 검정
+```{r results='hide'}
+tsData
+train <- window(tsData,end = c(2017,12))
+test <- window(tsData,start = c(2018,1))
+```
+
+```{r}
+autoplot(train)
+```  
+
+```{r}
+auto.arima(train)
+```  
+```{r}
+train_arima <- Arima(train,order = c(1,1,1),seasonal = list(order =c(1,0,0),
+                                                            period = 12))
+train_arima
+```  
+```{r}
+checkresiduals(train_arima)
+```  
+
+Forecast
+```{r}
+train_fcast <- forecast(train_arima,h = 12*2)
+autoplot(train_fcast)+autolayer(test)
+```  
+Test data 검정
+```{r}
+test_arima <- Arima(test,model = train_arima)
+accuracy(test_arima)
+```  
+
+
+
+
+
+참고자료  
+https://datascienceplus.com/time-series-analysis-using-arima-model-in-r/  
+https://diane-space.tistory.com/266?category=882602  
+https://otexts.com/fppkr/expsmooth-estimation-and-model-selection.html  
+https://ckmoong.tistory.com/10?category=933194
+
+
+
+
+
+
+
+
+
+
+
+
+
