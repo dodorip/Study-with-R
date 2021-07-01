@@ -1,0 +1,117 @@
+---
+title: "Linear Regression"
+author: "Doyeon"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+knitr::opts_chunk$set(cache = TRUE, cache.lazy = FALSE, warning = FALSE, message = FALSE, echo =TRUE, dpi = 180,
+                      fig.width = 8, fig.height = 5)
+library(data.table) #대용량 데이터 import에 적합
+library(skimr) #EDA
+library(naniar) #na check
+library(tidyverse) #tidymodels framework 중 데이터 전처리 담당.
+library(tidymodels) #tidymodels framework 중 Modeling을 담당.
+library(vip) #VIP()
+library(pROC)
+library(gridExtra)
+theme_set(theme_minimal())
+```
+
+#Tidymodels을 활용한 Linear Regression Modeling  
+## 데이터  
+- House Prices of kaggle - (https://www.kaggle.com/c/house-prices-advanced-regression-techniques)  
+```{r}
+#Data import
+train <- fread('train.csv', header = T)
+test <- fread('test.csv', header =T)
+test$SalePrice <- NA
+
+#데이터에 관한 정보 파악하기
+train %>% skim
+```  
+
+## Visualization  
+```{r}
+#Target(SalePrice)
+g1 <- ggplot(train,aes(x = SalePrice))+
+  geom_histogram(aes(y=..density..),colour = "black",fill = 'white')+
+  geom_density(alpha = .5, fill = 'blue')
+g2 <- ggplot(train,aes(sample = SalePrice))+
+  stat_qq()+
+  stat_qq_line()
+grid.arrange(g1,g2,nrow = 1, ncol = 2)
+```  
+
+Target이 치우친 분포를 갖고 있으므로 적절한 변환이 필요하다. log 변환을 실시한다.  
+```{r}
+g3 <- ggplot(train,aes(x = SalePrice %>% log))+
+  geom_histogram(aes(y=..density..),colour = "black",fill = 'white')+
+  geom_density(alpha = .5, fill = 'blue')
+g4 <- ggplot(train,aes(sample = SalePrice %>% log))+
+  stat_qq()+
+  stat_qq_line()
+grid.arrange(g3,g4,nrow = 1, ncol = 2)
+```
+
+Target 데이터가 log 변환을 통해서 정규분포 형태를 띄고 있음을 확인할 수 있다.  
+## NA check  
+```{r}
+train %>% 
+  select(where(~sum(is.na(.)) > 0)) %>% 
+  gg_miss_var()
+```
+```{r}
+train %>% 
+  select(where(~sum(is.na(.)) > 0)) %>% 
+  gg_miss_upset()
+```
+
+## 데이터 전처리 with Recipe
+```{r}
+house_recipe <- train %>% 
+  recipe(SalePrice~.) %>% 
+  step_rm(Alley,PoolQC,Fence,MiscFeature,Id) %>% #대부분의 값이 결측치로 되어있는 변수들 제거
+  step_log(SalePrice) %>% 
+  step_impute_median(all_numeric(),-all_outcomes()) %>% #numeric 변수의 결측치를 median값으로 대체
+  step_impute_mode(all_nominal()) %>%  #nominal 변수의 결측치를 최빈값으로 댗체
+  step_dummy(all_nominal()) %>% #nominal 변수들을 더미화 시켜준다.
+  step_normalize(all_predictors()) %>% #Linear Regression을 위해 독립변수들을 정규화 시켜준다.
+  prep() #모델링을 위한 준비
+#전처리한 레시피 확인
+print(house_recipe)
+```  
+## 전처리 레시피 적용  
+```{r}
+train2 <- house_recipe %>% juice() #juice 함수를 통해서 전처리 과정을 실제 데이터에 적용
+test2 <- bake(house_recipe,new_data = test) #준비한 레시피를 newdata인 test에 적용하는 과정
+train2 %>% head(10)
+```  
+## Build Linear Regression Model with tidymodels
+```{r}
+#Set lasso model
+lasso_model <- 
+  linear_reg(penalty = 0.01,
+             mixture = 1) %>% #mixture = 1 : lasso / mixture = 0 : ridge
+  set_mode('regression') %>% #사용할 mode 지정 
+  set_engine("glmnet") #사용할 engine 설정
+
+#Workflow 생성 : 생성한 model 과 formula를 workflow에 지정한다.(저장)
+lasso_wf <- 
+  workflow() %>% 
+  add_model(lasso_model) %>% 
+  add_formula(SalePrice~.)
+
+#Model fitting
+lasso_fit <- 
+  lasso_wf %>% 
+  fit(train2)
+
+#Predict with test_data
+lasso_pred <- predict(lasso_fit,new_data = test2) %>% exp()
+head(lasso_pred)
+```
+
+
+
