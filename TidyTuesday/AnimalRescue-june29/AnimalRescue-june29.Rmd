@@ -1,0 +1,64 @@
+---
+title: "june 29"
+author: "Doyeon"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+library(tidyverse)
+knitr::opts_chunk$set(cache = TRUE, cache.lazy = FALSE, warning = FALSE, message = FALSE, echo =TRUE, dpi = 180)
+
+```
+
+# 데이터 불러오기
+```{r}
+animal_rescues <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2021/2021-06-29/animal_rescues.csv')
+animal_rescues %>% head(3)
+```
+
+# 구조된 동물의 구조 빈도수(2019,2020년) 
+```{r}
+animal_counts <- animal_rescues %>%
+  mutate(group = fct_lump(animal_group_parent, 10)) %>%
+  count(year = cal_year, group, sort = T) %>%
+  mutate(group = fct_reorder(group, n)) %>%
+  filter(year >= 2019, year != 2021) %>%
+  filter(str_detect(group, "Unknown", negate = T))
+animal_counts %>% kable()
+```  
+# 두 해동안 구조된 동물의 증감 확인하기  
+```{r}
+animal_plot_df <- animal_counts %>%
+  arrange(group, year) %>%
+  group_by(group) %>%
+  mutate(change_percent = (n / lag(n) - 1),
+         change_percent = scales::percent_format()(change_percent)) %>%
+  mutate(grp_name = glue::glue("{group}"),
+         grp_name = fct_reorder(grp_name, n)) %>%
+  ungroup() %>%
+  mutate(grp_name = fct_relevel(grp_name, "Other", after = 0L))
+  
+animal_plot_df %>% kable()
+```
+# Visualization
+```{r}
+plot <- animal_plot_df %>%
+  ggplot(aes(x = n,y = grp_name,fill = factor(year))) +
+  geom_bar(position = position_dodge(width = 0.8),stat = "identity",width = 0.7) +
+  scale_fill_manual(values = c("#b3b3b4", "#cc0a14"),name = "") +
+  scale_x_continuous(position = "top", breaks = seq(0, 300, 50)) +
+  guides(
+    fill = guide_legend(
+      reverse = TRUE,
+      override.aes = list(size = 3))) +
+  theme_minimal() +
+  geom_vline(color = "white",xintercept = c(seq(0, 300, 50)),size = 0.5) +
+  labs(
+    x = "",
+    y = "",
+    title = 'Animal Rescue in Rondon 2019,2020')
+plot
+```
+
+
