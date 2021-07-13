@@ -1,0 +1,57 @@
+---
+title: "june 01 - Survivor TV Show"
+author: "Dy"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+library(tidyverse)
+library(ggtext)
+knitr::opts_chunk$set(cache = TRUE, cache.lazy = FALSE, warning = FALSE, message = FALSE, echo =TRUE, dpi = 180)
+
+```
+
+## 데이터 불러오기
+```{r}
+summary <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2021/2021-06-01/summary.csv')
+summary %>% head(3)
+```
+
+## Check Viewer
+```{r}
+viewer <- summary %>% 
+  select(season,viewers_finale) %>% 
+  mutate(id = row_number(),
+         season = season,
+         start = lag(viewers_finale), #전 시즌이 끝나고 다음 시즌이 시작하기 때문.
+         end = viewers_finale,
+         dif = end - start,
+         change_type = case_when(
+           dif >0 ~ "Increase",
+           dif == 0 ~ "No change",
+           dif <0 ~ "Decrease"
+         ))
+viewer %>% head(1) #First_season : 1
+s1_viewer <- viewer %>% filter(season == 1)
+viewer %>% tail(1) #Last_season : 40
+s40_viewer <- viewer %>% filter(season == 40)
+```
+
+## Visualization - Waterfall chart  
+```{r}
+plot <- viewer %>% 
+  ggplot()+
+  geom_rect(data = viewer,aes(season, fill = change_type,
+                        xmin = id- .45, xmax = id + .45, ymin = end, ymax = start)) +
+  geom_rect(data = s1_viewer,aes(season,
+                          xmin = id - .45, xmax = id + .45, ymin = 0, ymax = viewers_finale))+ #season1 마지막 시청자 plot
+  geom_rect(data = s40_viewer,aes(season,
+                           xmin = id - .45, xmax = id + .45, ymin = 0, ymax = start))+#season40 마지막 시청자 plot
+  scale_x_continuous(breaks = c(1,10,20,30,40))+
+  theme_minimal()+
+  theme(legend.position = 'none')+
+  labs(x = "Season\n", y= 'Viewers(in millions)',
+       title = 'Survivor TV Show\nFinale Viewers',fill='')
+plot
+```
